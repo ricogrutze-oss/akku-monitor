@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Akkugehäuse -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFE6EDF3"
+        android:strokeWidth="4"
+        android:pathData="M42,34 h24 a4,4 0 0 1 4,4 v38 a4,4 0 0 1 -4,4 h-24 a4,4 0 0 1 -4,-4 v-38 a4,4 0 0 1 4,-4 z" />
+    <path
+        android:fillColor="#FFE6EDF3"
+        android:pathData="M48,28 h12 v6 h-12 z" />
+    <!-- Blitz -->
+    <path
+        android:fillColor="#FF3FB950"
+        android:pathData="M56,40 L46,59 L53,59 L50,74 L62,53 L55,53 L58,40 Z" />
+</vector>
