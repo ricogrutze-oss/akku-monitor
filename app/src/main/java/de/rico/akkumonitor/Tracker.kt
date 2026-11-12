@@ -30,6 +30,19 @@ class TrackState {
     var qEdge = 0.0
     var inexact = false
 
+    // Ladevorgang-Statistik
+    var maxI = 0f
+    var maxP = 0f
+    var maxT = -100f
+    var plugged = 0
+
+    // Verbrauch nach Displayzustand
+    var lastScreen = true
+    var onMs = 0L
+    var onMah = 0.0
+    var offMs = 0L
+    var offMah = 0.0
+
     /** Zwischenschätzung (Kapazität in mAh, Δ%) oder null */
     fun estimate(): Pair<Double, Int>? {
         if (anchorLevel < 0 || edgeLevel < 0) return null
@@ -58,6 +71,15 @@ object Tracker {
         edgeLevel = p.getInt("t_edgeL", -1)
         qEdge = p.getFloat("t_qEdge", 0f).toDouble()
         inexact = p.getBoolean("t_inex", false)
+        maxI = p.getFloat("t_maxI", 0f)
+        maxP = p.getFloat("t_maxP", 0f)
+        maxT = p.getFloat("t_maxT", -100f)
+        plugged = p.getInt("t_plug", 0)
+        lastScreen = p.getBoolean("t_scr", true)
+        onMs = p.getLong("t_onMs", 0)
+        onMah = p.getFloat("t_onQ", 0f).toDouble()
+        offMs = p.getLong("t_offMs", 0)
+        offMah = p.getFloat("t_offQ", 0f).toDouble()
     }
 
     private fun save(p: SharedPreferences, s: TrackState) {
@@ -69,10 +91,15 @@ object Tracker {
             .putInt("t_anchL", s.anchorLevel).putFloat("t_qAnch", s.qAnchor.toFloat())
             .putInt("t_edgeL", s.edgeLevel).putFloat("t_qEdge", s.qEdge.toFloat())
             .putBoolean("t_inex", s.inexact)
+            .putFloat("t_maxI", s.maxI).putFloat("t_maxP", s.maxP).putFloat("t_maxT", s.maxT)
+            .putInt("t_plug", s.plugged)
+            .putBoolean("t_scr", s.lastScreen)
+            .putLong("t_onMs", s.onMs).putFloat("t_onQ", s.onMah.toFloat())
+            .putLong("t_offMs", s.offMs).putFloat("t_offQ", s.offMah.toFloat())
             .apply()
     }
 
-    private fun start(st: TrackState, type: Int, s: Sample, elapsed: Long) {
+    private fun start(st: TrackState, type: Int, s: Sample, elapsed: Long, screenOn: Boolean) {
         st.type = type
         st.startTime = s.time
         st.lastElapsed = elapsed
@@ -83,26 +110,53 @@ object Tracker {
         st.anchorLevel = -1; st.qAnchor = 0.0
         st.edgeLevel = -1; st.qEdge = 0.0
         st.inexact = false
+        st.maxI = 0f; st.maxP = 0f; st.maxT = s.tempC
+        st.plugged = s.plugged
+        st.lastScreen = screenOn
+        st.onMs = 0; st.onMah = 0.0; st.offMs = 0; st.offMah = 0.0
     }
 
-    private fun finish(ctx: Context, st: TrackState) {
-        val est = st.estimate() ?: return
-        val (cap, dl) = est
-        if (abs(dl) < MIN_DELTA_LEVEL || cap < 300 || cap > 30000) return
-        DataLog.appendEstimate(
-            ctx, Estimate(System.currentTimeMillis(), st.type == 1, dl, st.qEdge - st.qAnchor, cap, st.inexact)
-        )
+    private fun finish(ctx: Context, st: TrackState, p: SharedPreferences) {
+        val now = System.currentTimeMillis()
+        val durMs = now - st.startTime
+
+        // Kapazitätsschätzung
+        st.estimate()?.let { (cap, dl) ->
+            if (abs(dl) >= MIN_DELTA_LEVEL && cap in 300.0..30000.0) {
+                DataLog.appendEstimate(
+                    ctx, Estimate(now, st.type == 1, dl, st.qEdge - st.qAnchor, cap, st.inexact)
+                )
+            }
+        }
+        // Ladevorgang speichern
+        if (st.type == 1 && durMs >= 3 * 60_000L && st.lastLevel >= 0) {
+            DataLog.appendSession(
+                ctx, ChargeSession(
+                    st.startTime, now, st.startLevel, st.lastLevel, st.q, st.e,
+                    st.maxI, st.maxP, st.maxT, st.plugged
+                )
+            )
+        }
+        // Letzte Entladung für Standby-Auswertung merken
+        if (st.type == -1 && durMs >= 30 * 60_000L) {
+            p.edit()
+                .putLong("ld_end", now).putLong("ld_start", st.startTime)
+                .putLong("ld_onMs", st.onMs).putFloat("ld_onQ", st.onMah.toFloat())
+                .putLong("ld_offMs", st.offMs).putFloat("ld_offQ", st.offMah.toFloat())
+                .putInt("ld_startL", st.startLevel).putInt("ld_endL", st.lastLevel)
+                .apply()
+        }
     }
 
     @Synchronized
-    fun update(ctx: Context, s: Sample, elapsed: Long, intervalMs: Long) {
+    fun update(ctx: Context, s: Sample, elapsed: Long, intervalMs: Long, screenOn: Boolean) {
         val p = Prefs.get(ctx)
         val st = load(p)
         val type = if (s.isPlugged) 1 else -1
 
         // Erststart oder Neustart des Handys (elapsedRealtime springt zurück)
         if (st.type == 0 || st.lastElapsed > elapsed) {
-            start(st, type, s, elapsed); save(p, st); return
+            start(st, type, s, elapsed, screenOn); save(p, st); return
         }
         val dtMs = elapsed - st.lastElapsed
         if (dtMs <= 0) return
@@ -112,11 +166,11 @@ object Tracker {
 
         // Lange Lücke ohne Ladungszähler -> Abschnitt bis hierher werten und neu beginnen
         if (gap && !haveCc && dtMs > 30 * 60_000L) {
-            finish(ctx, st); start(st, type, s, elapsed); save(p, st); return
+            finish(ctx, st, p); start(st, type, s, elapsed, screenOn); save(p, st); return
         }
         // Netzteil an/ab -> Abschnitt wechseln
         if (st.type != type) {
-            finish(ctx, st); start(st, type, s, elapsed); save(p, st); return
+            finish(ctx, st, p); start(st, type, s, elapsed, screenOn); save(p, st); return
         }
 
         val dtH = dtMs / 3_600_000.0
@@ -134,7 +188,18 @@ object Tracker {
         if (!dq.isNaN()) {
             st.q += dq
             st.e += dq / 1000.0 * s.voltageV
+            if (st.lastScreen) { st.onMah += dq; st.onMs += dtMs } else { st.offMah += dq; st.offMs += dtMs }
+            if (type == 1 && dq > 0) {
+                p.edit().putFloat("totalChargeMah", p.getFloat("totalChargeMah", 0f) + dq.toFloat()).apply()
+            }
         }
+
+        if (!s.currentMa.isNaN()) {
+            st.maxI = max(st.maxI, s.currentMa)
+            st.maxP = max(st.maxP, s.powerW)
+        }
+        st.maxT = max(st.maxT, s.tempC)
+        if (s.plugged != 0) st.plugged = s.plugged
 
         if (s.level >= 0 && st.lastLevel >= 0 && s.level != st.lastLevel) {
             if (st.anchorLevel < 0) {
@@ -147,6 +212,7 @@ object Tracker {
         st.lastElapsed = elapsed
         st.lastCurrent = s.currentMa
         st.lastCc = s.chargeCounterMah
+        st.lastScreen = screenOn
         save(p, st)
     }
 }

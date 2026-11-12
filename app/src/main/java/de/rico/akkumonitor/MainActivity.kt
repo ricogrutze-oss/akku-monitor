@@ -39,6 +39,7 @@ object Ui {
     val ORANGE = 0xFFF0883E.toInt()
     val BLUE = 0xFF58A6FF.toInt()
     val RED = 0xFFF85149.toInt()
+    val PURPLE = 0xFFBC8CFF.toInt()
 }
 
 class MainActivity : Activity() {
@@ -57,6 +58,14 @@ class MainActivity : Activity() {
     private lateinit var tvRaw: TextView
     private lateinit var btnService: TextView
     private lateinit var chart: ChartView
+    private lateinit var tvRemain: TextView
+    private lateinit var tvStandby: TextView
+    private lateinit var sessionsBox: LinearLayout
+    private lateinit var capChart: CapacityChartView
+    private lateinit var tvCycles: TextView
+    private var sessKey = ""
+    private var capKey = ""
+    private val recent = ArrayDeque<Sample>()
 
     private var rangeH = 6
     private var lastChartLoad = 0L
@@ -174,6 +183,8 @@ class MainActivity : Activity() {
         head.addView(tvPower, LinearLayout.LayoutParams(-1, -2))
         tvDetails = text("", 14f, Ui.SUB)
         head.addView(tvDetails)
+        tvRemain = text("", 15f, Ui.TEXT, true).apply { setPadding(0, dp(6), 0, 0) }
+        head.addView(tvRemain)
 
         // Diagramm
         val ch = card(root, "Verlauf")
@@ -199,6 +210,28 @@ class MainActivity : Activity() {
         tvSeg = text("", 14f)
         card(root, "Laufender Abschnitt").addView(tvSeg)
 
+        tvStandby = text("", 14f)
+        card(root, "Verbrauch (Display an / aus)").addView(tvStandby)
+
+        val sc = card(root, "Ladevorgänge")
+        sc.addView(text("Antippen für Ladekurve und Namen (z. B. Ladegerät)", 12f, Ui.SUB))
+        sessionsBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        sc.addView(sessionsBox)
+
+        val lc = card(root, "Langzeit")
+        space(lc, 6)
+        capChart = CapacityChartView(this)
+        lc.addView(capChart)
+        lc.addView(text("● Laden  ● Entladen  – – Nennkapazität", 11f, Ui.SUB).apply {
+            val sp = android.text.SpannableString(text)
+            sp.setSpan(android.text.style.ForegroundColorSpan(Ui.GREEN), 0, 1, 0)
+            val idx = text.indexOf("●", 2)
+            sp.setSpan(android.text.style.ForegroundColorSpan(Ui.ORANGE), idx, idx + 1, 0)
+            text = sp
+        })
+        tvCycles = text("", 14f).apply { setPadding(0, dp(6), 0, 0) }
+        lc.addView(tvCycles)
+
         tvEst = text("", 13f, Ui.SUB).apply { typeface = Typeface.MONOSPACE }
         card(root, "Letzte Messungen").addView(tvEst)
 
@@ -220,6 +253,20 @@ class MainActivity : Activity() {
         set.addView(text("Vorzeichen", 13f, Ui.SUB).apply { setPadding(0, dp(10), 0, dp(4)) })
         set.addView(segmented(listOf("Auto", "Normal", "Invertiert"), p.getInt("signMode", 0)) {
             p.edit().putInt("signMode", it).apply()
+        })
+
+        set.addView(text("Ladegrenze-Alarm (Ton + Vibration)", 13f, Ui.SUB).apply { setPadding(0, dp(10), 0, dp(4)) })
+        val levels = listOf(0, 80, 85, 90, 100)
+        set.addView(segmented(listOf("Aus", "80 %", "85 %", "90 %", "100 %"),
+            levels.indexOf(p.getInt("alarmLevel", 0)).coerceAtLeast(0)) {
+            p.edit().putInt("alarmLevel", levels[it]).putBoolean("al_level_done", false).apply()
+        })
+
+        set.addView(text("Temperaturwarnung ab", 13f, Ui.SUB).apply { setPadding(0, dp(10), 0, dp(4)) })
+        val temps = listOf(0, 38, 40, 42, 45)
+        set.addView(segmented(listOf("Aus", "38 °C", "40 °C", "42 °C", "45 °C"),
+            temps.indexOf(p.getInt("tempLimit", 40)).coerceAtLeast(0)) {
+            p.edit().putInt("tempLimit", temps[it]).putBoolean("al_temp_armed", true).apply()
         })
 
         set.addView(text("Nennkapazität in mAh (leer = vom System)", 13f, Ui.SUB).apply { setPadding(0, dp(10), 0, 0) })
@@ -283,6 +330,8 @@ class MainActivity : Activity() {
             tvPower.setTextColor(if (s.currentMa >= 0) Ui.GREEN else Ui.ORANGE)
         }
         tvDetails.text = String.format(de, "%s\n%.3f V  ·  %.1f °C", BatteryReader.statusText(s), s.voltageV, s.tempC)
+        recent.addLast(s)
+        while (recent.isNotEmpty() && s.time - recent.first().time > 15 * 60_000L) recent.removeFirst()
 
         // Kapazität
         val all = DataLog.loadEstimates(this)
@@ -343,6 +392,17 @@ class MainActivity : Activity() {
             } + "\n\n▲ Laden  ▼ Entladen  ~ ungenau"
         }
 
+        val cap = bestCapacity(s, est, design?.first)
+        tvRemain.text = remainingText(s, cap)
+        tvStandby.text = standbyText(st, cap)
+        refreshSessions()
+        val ck = "${all.size}|${design?.first}"
+        if (ck != capKey) { capKey = ck; capChart.setData(all, design?.first) }
+        val total = Prefs.get(this).getFloat("totalChargeMah", 0f).toDouble()
+        tvCycles.text = if (cap != null && total > 0)
+            "Geladen seit Installation: ${fmt(total, 0)} mAh ≈ ${fmt(total / cap, 1)} Vollzyklen"
+        else "Ladezyklen: noch keine Daten"
+
         // Diagnose
         val raw = Calibration.lastRaw
         tvRaw.text = "Rohwert CURRENT_NOW: ${if (raw == Int.MIN_VALUE) "n/v" else raw.toString()}  ·  " +
@@ -358,7 +418,172 @@ class MainActivity : Activity() {
         val from = to - rangeH * 3_600_000L
         Thread {
             val list = DataLog.load(this, from)
-            runOnUiThread { chart.setData(list, from, to) }
+            runOnUiThread {
+                chart.setData(list, from, to)
+                if (recent.size < 5) {
+                    recent.clear()
+                    list.filter { to - it.time <= 15 * 60_000L }.forEach { recent.addLast(it) }
+                }
+            }
+        }.start()
+    }
+
+    private fun dur(h: Double): String {
+        if (h.isNaN() || h.isInfinite() || h < 0) return "–"
+        val m = (h * 60).toLong()
+        return if (m >= 60 * 48) "${m / 1440} Tage ${(m % 1440) / 60} h" else "${m / 60} h ${m % 60} min"
+    }
+
+    /** Beste verfügbare Kapazität: Messung > Fuel-Gauge > Nennwert */
+    private fun bestCapacity(s: Sample, est: Double?, design: Double?): Double? {
+        if (est != null) return est
+        if (!s.chargeCounterMah.isNaN() && s.level > 10) return s.chargeCounterMah / s.level * 100.0
+        return design
+    }
+
+    /** Mittlerer Strom der letzten 10 min im gleichen Zustand (Laden/Entladen) */
+    private fun recentAvg(s: Sample): Double? {
+        val l = recent.filter { s.time - it.time <= 10 * 60_000L && it.isPlugged == s.isPlugged && !it.currentMa.isNaN() }
+        if (l.size < 3) return null
+        return l.map { it.currentMa.toDouble() }.average()
+    }
+
+    private fun remainingText(s: Sample, cap: Double?): String {
+        if (cap == null || s.level < 0 || s.currentMa.isNaN()) return ""
+        val avg = recentAvg(s) ?: s.currentMa.toDouble()
+        return if (s.isPlugged) {
+            if (s.level >= 100 || avg <= 20) "Voll bzw. lädt nicht"
+            else "Voll in ca. ${dur((100 - s.level) / 100.0 * cap / avg)}  (die letzten % dauern länger)"
+        } else {
+            if (avg >= -5) "" else {
+                val st = Tracker.load(Prefs.get(this))
+                val segH = (System.currentTimeMillis() - st.startTime) / 3_600_000.0
+                val segAvg = if (st.type == -1 && segH > 0.5) st.q / segH else null
+                var t = "Restlaufzeit: ${dur(s.level / 100.0 * cap / -avg)} (aktueller Verbrauch)"
+                if (segAvg != null && segAvg < -5) t += "\n…oder ${dur(s.level / 100.0 * cap / -segAvg)} (Ø seit Abstecken)"
+                t
+            }
+        }
+    }
+
+    private fun usageLine(label: String, mah: Double, ms: Long, cap: Double?): String {
+        val h = ms / 3_600_000.0
+        if (h < 0.05) return "$label: –"
+        val ma = -mah / h
+        val pct = if (cap != null) String.format(de, " · %.1f %%/h", ma / cap * 100) else ""
+        return String.format(de, "%s: Ø %,.0f mA%s  (%s)", label, ma, pct, dur(h))
+    }
+
+    private fun standbyText(st: TrackState, cap: Double?): String {
+        val sb = StringBuilder()
+        if (st.type == -1) {
+            sb.append("Seit Abstecken\n")
+            sb.append(usageLine("  Display an", st.onMah, st.onMs, cap)).append("\n")
+            sb.append(usageLine("  Display aus", st.offMah, st.offMs, cap)).append("\n")
+        }
+        val p = Prefs.get(this)
+        val end = p.getLong("ld_end", 0)
+        if (end > 0) {
+            val tf = SimpleDateFormat("dd.MM. HH:mm", de)
+            sb.append("Letzte Entladung (bis ${tf.format(Date(end))})\n")
+            sb.append(usageLine("  Display an", p.getFloat("ld_onQ", 0f).toDouble(), p.getLong("ld_onMs", 0), cap)).append("\n")
+            sb.append(usageLine("  Display aus", p.getFloat("ld_offQ", 0f).toDouble(), p.getLong("ld_offMs", 0), cap)).append("\n")
+        }
+        if (sb.isEmpty()) return "Noch keine Daten – wird beim nächsten Entladen erfasst."
+        sb.append("Hoher Wert bei „Display aus“ (> ca. 1 %/h) deutet auf eine App, die im Hintergrund Strom zieht.")
+        return sb.toString()
+    }
+
+    private fun plugName(pl: Int) = when (pl) {
+        android.os.BatteryManager.BATTERY_PLUGGED_AC -> "Netzteil"
+        android.os.BatteryManager.BATTERY_PLUGGED_USB -> "USB"
+        android.os.BatteryManager.BATTERY_PLUGGED_WIRELESS -> "kabellos"
+        else -> "?"
+    }
+
+    private fun refreshSessions() {
+        val list = DataLog.loadSessions(this).takeLast(10).reversed()
+        val key = list.joinToString { it.start.toString() + DataLog.sessionName(this, it.start) }
+        if (key == sessKey) return
+        sessKey = key
+        sessionsBox.removeAllViews()
+        if (list.isEmpty()) {
+            sessionsBox.addView(text("Noch kein abgeschlossener Ladevorgang.", 14f, Ui.SUB).apply { setPadding(0, dp(6), 0, 0) })
+            return
+        }
+        val tf = SimpleDateFormat("dd.MM. HH:mm", de)
+        list.forEach { c ->
+            val name = DataLog.sessionName(this, c.start)
+            val row = text(
+                String.format(
+                    de, "%s  %d→%d %%%s\nmax %.2f A · %.1f W · Ø %.1f W · %s",
+                    tf.format(Date(c.start)), c.startLevel, c.endLevel,
+                    if (name.isNotEmpty()) "  · $name" else "",
+                    c.maxMa / 1000f, c.maxW, c.avgW, plugName(c.plugged)
+                ), 14f
+            ).apply {
+                setPadding(0, dp(8), 0, dp(8))
+                setOnClickListener { showSession(c) }
+            }
+            sessionsBox.addView(row)
+        }
+        // Vergleich der Ladegeräte nach Namen
+        val named = DataLog.loadSessions(this).groupBy { DataLog.sessionName(this, it.start) }.filterKeys { it.isNotEmpty() }
+        if (named.isNotEmpty()) {
+            val cmp = named.map { (n, l) -> n to l.maxOf { it.maxW } }.sortedByDescending { it.second }
+                .joinToString("\n") { String.format(de, "  %-14s max %.1f W", it.first, it.second) }
+            sessionsBox.addView(text("Vergleich (bester Wert je Name):\n$cmp", 13f, Ui.SUB).apply {
+                typeface = Typeface.MONOSPACE; setPadding(0, dp(8), 0, 0)
+            })
+        }
+    }
+
+    private fun showSession(c: ChargeSession) {
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(12), dp(8), dp(12), 0)
+        }
+        val cv = ChartView(this, 260).apply { showExtra = true }
+        box.addView(cv)
+        box.addView(text("━ Strom  ━ Ladestand  ━ Spannung  ┅ Temperatur", 11f, Ui.SUB).apply {
+            val sp = android.text.SpannableString(text)
+            val cols = listOf(Ui.ORANGE, Ui.BLUE, Ui.PURPLE, Ui.RED)
+            var idx = 0
+            cols.forEach { col ->
+                val i = text.indexOfAny(charArrayOf('━', '┅'), idx)
+                if (i >= 0) { sp.setSpan(android.text.style.ForegroundColorSpan(col), i, i + 1, 0); idx = i + 1 }
+            }
+            text = sp
+        })
+        val h = (c.end - c.start) / 3_600_000.0
+        box.addView(text(
+            String.format(
+                de, "Dauer %s · %d→%d %%\nGeladen %,.0f mAh · %.2f Wh\nmax %.0f mA · max %.1f W · Ø %.1f W\nmax Temperatur %.1f °C · %s",
+                dur(h), c.startLevel, c.endLevel, c.mah, c.wh, c.maxMa, c.maxW, c.avgW, c.maxTempC, plugName(c.plugged)
+            ), 14f
+        ).apply { setPadding(0, dp(8), 0, 0) })
+
+        val et = EditText(this).apply {
+            hint = "Name, z. B. Samsung 25 W"
+            setText(DataLog.sessionName(this@MainActivity, c.start))
+            setTextColor(Ui.TEXT); setHintTextColor(Ui.SUB)
+            inputType = InputType.TYPE_CLASS_TEXT
+        }
+        box.addView(et)
+
+        AlertDialog.Builder(this, android.R.style.Theme_Material_Dialog)
+            .setTitle("Ladevorgang " + SimpleDateFormat("dd.MM. HH:mm", de).format(Date(c.start)))
+            .setView(ScrollView(this).apply { addView(box) })
+            .setPositiveButton("Speichern") { _, _ ->
+                DataLog.setSessionName(this, c.start, et.text.toString())
+                refreshSessions()
+            }
+            .setNegativeButton("Schließen", null)
+            .show()
+
+        Thread {
+            val list = DataLog.load(this, c.start).filter { it.time <= c.end }
+            runOnUiThread { cv.setData(list, c.start, c.end) }
         }.start()
     }
 

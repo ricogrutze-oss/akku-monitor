@@ -19,11 +19,28 @@ data class Estimate(
     val inexact: Boolean      // Messlücken ohne Ladungszähler überbrückt
 )
 
+/** Ein abgeschlossener Ladevorgang (Netzteil an bis ab). */
+data class ChargeSession(
+    val start: Long,
+    val end: Long,
+    val startLevel: Int,
+    val endLevel: Int,
+    val mah: Double,
+    val wh: Double,
+    val maxMa: Float,
+    val maxW: Float,
+    val maxTempC: Float,
+    val plugged: Int
+) {
+    val avgW: Double get() = if (end > start) wh / ((end - start) / 3_600_000.0) else 0.0
+}
+
 object DataLog {
     private fun dir(ctx: Context) = File(ctx.filesDir, "log").apply { mkdirs() }
     private fun dayName(t: Long) = SimpleDateFormat("yyyyMMdd", Locale.US).format(Date(t))
     private fun fileFor(ctx: Context, t: Long) = File(dir(ctx), "s_${dayName(t)}.csv")
     private fun estFile(ctx: Context) = File(ctx.filesDir, "estimates.csv")
+    private fun sesFile(ctx: Context) = File(ctx.filesDir, "sessions.csv")
 
     private fun f(v: Float, d: Int) = if (v.isNaN()) "NaN" else String.format(Locale.US, "%.${d}f", v)
 
@@ -77,6 +94,7 @@ object DataLog {
     fun deleteAll(ctx: Context) {
         dir(ctx).listFiles()?.forEach { it.delete() }
         estFile(ctx).delete()
+        sesFile(ctx).delete()
     }
 
     /** Export als CSV für Excel (Semikolon, Dezimalkomma). */
@@ -100,6 +118,16 @@ object DataLog {
                 "${tf.format(Date(e.time))};${if (e.charging) "Laden" else "Entladen"};${e.deltaLevel};" +
                     "${String.format(Locale.GERMANY, "%.0f", e.deltaMah)};${String.format(Locale.GERMANY, "%.0f", e.capacityMah)};" +
                     "${if (e.inexact) "ja" else "nein"}\n"
+            )
+        }
+        w.write("\n\nLadevorgänge\nBeginn;Ende;Start_%;Ende_%;mAh;Wh;max_mA;max_W;Mittel_W;max_Temp_C;Quelle;Name\n")
+        loadSessions(ctx).forEach { c ->
+            w.write(
+                "${tf.format(Date(c.start))};${tf.format(Date(c.end))};${c.startLevel};${c.endLevel};" +
+                    "${String.format(Locale.GERMANY, "%.0f", c.mah)};${String.format(Locale.GERMANY, "%.2f", c.wh)};" +
+                    "${String.format(Locale.GERMANY, "%.0f", c.maxMa)};${String.format(Locale.GERMANY, "%.2f", c.maxW)};" +
+                    "${String.format(Locale.GERMANY, "%.2f", c.avgW)};${String.format(Locale.GERMANY, "%.1f", c.maxTempC)};" +
+                    "${c.plugged};${sessionName(ctx, c.start)}\n"
             )
         }
         w.flush()
@@ -137,4 +165,33 @@ object DataLog {
         }
         return if (sw > 0) sv / sw else null
     }
+
+    @Synchronized
+    fun appendSession(ctx: Context, c: ChargeSession) {
+        sesFile(ctx).appendText(
+            "${c.start};${c.end};${c.startLevel};${c.endLevel};" +
+                "${String.format(Locale.US, "%.1f", c.mah)};${String.format(Locale.US, "%.3f", c.wh)};" +
+                "${f(c.maxMa, 0)};${f(c.maxW, 2)};${f(c.maxTempC, 1)};${c.plugged}\n"
+        )
+    }
+
+    fun loadSessions(ctx: Context): List<ChargeSession> {
+        val f = sesFile(ctx)
+        if (!f.exists()) return emptyList()
+        return f.readLines().mapNotNull { line ->
+            val p = line.split(';')
+            try {
+                ChargeSession(
+                    p[0].toLong(), p[1].toLong(), p[2].toInt(), p[3].toInt(), p[4].toDouble(), p[5].toDouble(),
+                    p[6].toFloat(), p[7].toFloat(), p[8].toFloat(), p[9].toInt()
+                )
+            } catch (e: Exception) {
+                null
+            }
+        }
+    }
+
+    fun sessionName(ctx: Context, start: Long): String = Prefs.get(ctx).getString("sname_$start", "") ?: ""
+    fun setSessionName(ctx: Context, start: Long, name: String) =
+        Prefs.get(ctx).edit().putString("sname_$start", name.trim()).apply()
 }

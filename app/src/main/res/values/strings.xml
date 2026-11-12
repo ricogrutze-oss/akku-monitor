@@ -2,4 +2,5 @@
 <resources>
     <string name="app_name">Akku-Monitor</string>
     <color name="ic_bg">#FF1C2128</color>
+    <string name="widget_desc">Akkustrom und Leistung live</string>
 </resources>

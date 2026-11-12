@@ -48,8 +48,9 @@ class MonitorService : Service() {
 
     private val powerReceiver = object : BroadcastReceiver() {
         override fun onReceive(c: Context, i: Intent) {
-            // Netzteil an/ab sofort erfassen
-            handler.postDelayed({ sample() }, 1500)
+            // Netzteil an/ab bzw. Display an/aus sofort erfassen
+            if (i.action == Intent.ACTION_SCREEN_ON || i.action == Intent.ACTION_SCREEN_OFF) sample()
+            else handler.postDelayed({ sample() }, 1500)
         }
     }
 
@@ -66,12 +67,15 @@ class MonitorService : Service() {
         val f = IntentFilter().apply {
             addAction(Intent.ACTION_POWER_CONNECTED)
             addAction(Intent.ACTION_POWER_DISCONNECTED)
+            addAction(Intent.ACTION_SCREEN_ON)
+            addAction(Intent.ACTION_SCREEN_OFF)
         }
         if (Build.VERSION.SDK_INT >= 33) {
             registerReceiver(powerReceiver, f, Context.RECEIVER_EXPORTED)
         } else {
             registerReceiver(powerReceiver, f)
         }
+        Alerts.ensureChannel(this)
         DataLog.cleanup(this)
     }
 
@@ -100,8 +104,11 @@ class MonitorService : Service() {
     private fun sample() {
         val s = BatteryReader.read(this) ?: return
         DataLog.append(this, s)
-        Tracker.update(this, s, SystemClock.elapsedRealtime(), intervalMs(this))
+        val screenOn = getSystemService(PowerManager::class.java).isInteractive
+        Tracker.update(this, s, SystemClock.elapsedRealtime(), intervalMs(this), screenOn)
         updateWakeLock(s)
+        Alerts.check(this, s)
+        BatteryWidget.update(this, s)
         getSystemService(NotificationManager::class.java).notify(NOTIF_ID, buildNotification(s))
     }
 

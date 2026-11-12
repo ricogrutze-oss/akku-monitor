@@ -55,3 +55,13 @@ Das Passwort steht offen in `app/build.gradle.kts`. Für ein privates Werkzeug i
 | `DataLog.kt` | Tagesdateien (60 Tage), CSV-Export für Excel |
 | `ChartView.kt` | Diagramm Strom + Ladestand |
 | `MainActivity.kt` | Oberfläche |
+
+## Version 1.1
+
+* Ladegrenze-Alarm (80/85/90/100 %) mit Ton und Vibration
+* Temperaturwarnung (38–45 °C)
+* Ladevorgänge mit max. Strom/Leistung, Ladekurve (Strom, Spannung, Temperatur) und Namen für Ladegeräte-Vergleich
+* Verbrauch getrennt nach Display an/aus (Standby-Verbrauch)
+* Restlaufzeit bzw. Zeit bis voll
+* Langzeitverlauf der Kapazität und Ladezyklen
+* Startbildschirm-Widget
