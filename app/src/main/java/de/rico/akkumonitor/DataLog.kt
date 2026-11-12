@@ -86,7 +86,7 @@ object DataLog {
     fun cleanup(ctx: Context, keepDays: Int = 60) {
         val limit = dayName(System.currentTimeMillis() - keepDays * 86_400_000L)
         dir(ctx).listFiles()?.forEach {
-            val d = it.name.removePrefix("s_").removeSuffix(".csv")
+            val d = it.name.removePrefix("s_").removePrefix("a_").removeSuffix(".csv")
             if (d.length == 8 && d < limit) it.delete()
         }
     }

@@ -98,6 +98,7 @@ class MonitorService : Service() {
         handler.removeCallbacksAndMessages(null)
         try { unregisterReceiver(powerReceiver) } catch (e: Exception) {}
         releaseWakeLock()
+        AppTracker.save(this)
         super.onDestroy()
     }
 
@@ -105,7 +106,8 @@ class MonitorService : Service() {
         val s = BatteryReader.read(this) ?: return
         DataLog.append(this, s)
         val screenOn = getSystemService(PowerManager::class.java).isInteractive
-        Tracker.update(this, s, SystemClock.elapsedRealtime(), intervalMs(this), screenOn)
+        val dq = Tracker.update(this, s, SystemClock.elapsedRealtime(), intervalMs(this), screenOn)
+        AppTracker.update(this, dq, s.isPlugged, screenOn)
         updateWakeLock(s)
         Alerts.check(this, s)
         BatteryWidget.update(this, s)

@@ -149,28 +149,29 @@ object Tracker {
     }
 
     @Synchronized
-    fun update(ctx: Context, s: Sample, elapsed: Long, intervalMs: Long, screenOn: Boolean) {
+    /** Liefert die im Intervall geflossene Ladung in mAh (+ = Laden) oder NaN. */
+    fun update(ctx: Context, s: Sample, elapsed: Long, intervalMs: Long, screenOn: Boolean): Double {
         val p = Prefs.get(ctx)
         val st = load(p)
         val type = if (s.isPlugged) 1 else -1
 
         // Erststart oder Neustart des Handys (elapsedRealtime springt zurück)
         if (st.type == 0 || st.lastElapsed > elapsed) {
-            start(st, type, s, elapsed, screenOn); save(p, st); return
+            start(st, type, s, elapsed, screenOn); save(p, st); return Double.NaN
         }
         val dtMs = elapsed - st.lastElapsed
-        if (dtMs <= 0) return
+        if (dtMs <= 0) return Double.NaN
 
         val haveCc = !st.lastCc.isNaN() && !s.chargeCounterMah.isNaN()
         val gap = dtMs > max(3 * intervalMs, 90_000L)
 
         // Lange Lücke ohne Ladungszähler -> Abschnitt bis hierher werten und neu beginnen
         if (gap && !haveCc && dtMs > 30 * 60_000L) {
-            finish(ctx, st, p); start(st, type, s, elapsed, screenOn); save(p, st); return
+            finish(ctx, st, p); start(st, type, s, elapsed, screenOn); save(p, st); return Double.NaN
         }
         // Netzteil an/ab -> Abschnitt wechseln
         if (st.type != type) {
-            finish(ctx, st, p); start(st, type, s, elapsed, screenOn); save(p, st); return
+            finish(ctx, st, p); start(st, type, s, elapsed, screenOn); save(p, st); return Double.NaN
         }
 
         val dtH = dtMs / 3_600_000.0
@@ -214,5 +215,6 @@ object Tracker {
         st.lastCc = s.chargeCounterMah
         st.lastScreen = screenOn
         save(p, st)
+        return dq
     }
 }

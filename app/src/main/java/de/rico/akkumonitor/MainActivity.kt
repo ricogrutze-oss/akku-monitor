@@ -64,6 +64,8 @@ class MainActivity : Activity() {
     private lateinit var capChart: CapacityChartView
     private lateinit var tvCycles: TextView
     private var sessKey = ""
+    private lateinit var appsBox: LinearLayout
+    private var appDays = 1
     private var capKey = ""
     private val recent = ArrayDeque<Sample>()
 
@@ -73,7 +75,7 @@ class MainActivity : Activity() {
     private val refresh = object : Runnable {
         override fun run() {
             updateLive()
-            if (System.currentTimeMillis() - lastChartLoad > 30_000) loadChart()
+            if (System.currentTimeMillis() - lastChartLoad > 30_000) { loadChart(); refreshApps() }
             ui.postDelayed(this, 2000)
         }
     }
@@ -217,6 +219,20 @@ class MainActivity : Activity() {
         sc.addView(text("Antippen für Ladekurve und Namen (z. B. Ladegerät)", 12f, Ui.SUB))
         sessionsBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         sc.addView(sessionsBox)
+
+        val ac = card(root, "Apps (nur ohne Netzteil)")
+        space(ac, 6)
+        ac.addView(segmented(listOf("Heute", "7 Tage", "30 Tage"), 0) { i ->
+            appDays = listOf(1, 7, 30)[i]; refreshApps()
+        })
+        appsBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        ac.addView(appsBox)
+        space(ac, 8)
+        ac.addView(button("Android-Akkuverbrauch je App öffnen") {
+            try { startActivity(Intent(Intent.ACTION_POWER_USAGE_SUMMARY)) } catch (e: Exception) {
+                Toast.makeText(this, "Auf diesem Gerät nicht verfügbar", Toast.LENGTH_SHORT).show()
+            }
+        })
 
         val lc = card(root, "Langzeit")
         space(lc, 6)
@@ -536,6 +552,77 @@ class MainActivity : Activity() {
                 typeface = Typeface.MONOSPACE; setPadding(0, dp(8), 0, 0)
             })
         }
+    }
+
+    private fun refreshApps() {
+        if (!::appsBox.isInitialized) return
+        appsBox.removeAllViews()
+        if (!AppTracker.hasPermission(this)) {
+            appsBox.addView(text(
+                "Damit die App sieht, welche App gerade vorne ist, braucht sie den „Nutzungsdatenzugriff“. " +
+                    "Daten verlassen das Handy nicht.", 14f, Ui.SUB
+            ).apply { setPadding(0, dp(8), 0, dp(8)) })
+            appsBox.addView(button("Nutzungsdatenzugriff erlauben") {
+                startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
+            })
+            return
+        }
+        Thread {
+            val m = AppTracker.load(this, appDays)
+            runOnUiThread { showApps(m) }
+        }.start()
+    }
+
+    private fun showApps(m: Map<String, AppTracker.Usage>) {
+        appsBox.removeAllViews()
+        val on = m.filterKeys { !it.startsWith("#") || it == AppTracker.UNKNOWN }
+            .filter { it.value.onMs > 30_000 }
+            .toList().sortedByDescending { it.second.mah }
+        val totOn = on.sumOf { it.second.mah }
+        val sb = StringBuilder()
+        if (on.isEmpty()) {
+            sb.append("Display an: noch keine Daten – wird ohne Netzteil erfasst.")
+        } else {
+            sb.append(String.format(de, "Display an – gesamt %,.0f mAh\n", totOn))
+            on.take(12).forEach { (pkg, u) ->
+                val h = u.onMs / 3_600_000.0
+                val name = if (pkg == AppTracker.UNKNOWN) "(unbekannt)" else AppTracker.label(this, pkg)
+                sb.append(String.format(
+                    de, "%-16.16s %5.0f mAh %3.0f%% %s Ø%4.0f mA\n",
+                    name, u.mah, if (totOn > 0) u.mah / totOn * 100 else 0.0, durShort(u.onMs), if (h > 0) u.mah / h else 0.0
+                ))
+            }
+        }
+        val off = m[AppTracker.OFF]
+        if (off != null && off.bgMs > 60_000) {
+            val h = off.bgMs / 3_600_000.0
+            sb.append(String.format(de, "\nDisplay aus – gesamt %,.0f mAh in %s (Ø %.0f mA)\n", off.mah, durShort(off.bgMs), off.mah / h))
+            val bg = m.filterKeys { !it.startsWith("#") }.filter { it.value.bgMs > 60_000 }
+                .toList().sortedByDescending { it.second.bgMs }
+            if (bg.isEmpty()) sb.append("Keine App lief bei Display aus im Vordergrunddienst.\n")
+            else {
+                sb.append("Aktiv im Hintergrund (Vordergrunddienst):\n")
+                bg.take(10).forEach { (pkg, u) ->
+                    sb.append(String.format(
+                        de, "%-16.16s %s (%3.0f%% der Zeit)\n",
+                        AppTracker.label(this, pkg), durShort(u.bgMs), u.bgMs * 100.0 / off.bgMs
+                    ))
+                }
+            }
+        }
+        appsBox.addView(text(sb.toString().trimEnd(), 12f).apply {
+            typeface = Typeface.MONOSPACE; setPadding(0, dp(8), 0, 0)
+        })
+        appsBox.addView(text(
+            "Ø mA = Verbrauch des ganzen Handys (inkl. Display), solange die App vorne war. " +
+                "Bei Display aus kann Android den Strom keiner App zuordnen – gezeigt wird, welche Apps da aktiv liefen. " +
+                "Die genaue Systemschätzung je App gibt es über den Knopf unten.", 11f, Ui.SUB
+        ).apply { setPadding(0, dp(8), 0, 0) })
+    }
+
+    private fun durShort(ms: Long): String {
+        val m = ms / 60_000
+        return if (m >= 60) String.format(de, "%2dh%02d", m / 60, m % 60) else String.format(de, "%3d min", m)
     }
 
     private fun showSession(c: ChargeSession) {

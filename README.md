@@ -65,3 +65,4 @@ Das Passwort steht offen in `app/build.gradle.kts`. Für ein privates Werkzeug i
 * Restlaufzeit bzw. Zeit bis voll
 * Langzeitverlauf der Kapazität und Ladezyklen
 * Startbildschirm-Widget
+* Apps: Verbrauch je Vordergrund-App bei Display an, aktive Hintergrund-Apps bei Display aus (braucht Nutzungsdatenzugriff)
